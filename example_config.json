@@ -1,0 +1,10 @@
+{
+  "_comment": "PLACEHOLDER NUMBERS - replace the base segments with measurements from the koi base in Origami Design Secrets (the base without scales). Base lengths can be in any unit (e.g. fractions of the original square, or its grid units).",
+  "paper_size_mm": 600,
+  "scale_pattern": [1, 1],
+  "base_units_per_scale": 0.05,
+  "scale_size_tolerance": 0.10,
+  "max_n": 160,
+  "x": [ {"base": 0.30}, {"scales": 22}, {"base": 0.70} ],
+  "y": [ {"base": 0.30}, {"scales": 22}, {"base": 0.70} ]
+}

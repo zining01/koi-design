@@ -1,0 +1,12 @@
+{
+  "_comment": "PLACEHOLDER VALUES. head/body/tail ratios are measured on the folded model (body = its length once the scale pleats are collapsed). folded_units_per_scale: how many of the scale_pattern's grid units stay visible in the folded length per scale - check this against your scale pattern.",
+  "paper_size_mm": 600,
+  "scale_pattern": [1, 1],
+  "folded_units_per_scale": 1,
+  "max_n": 200,
+  "x": [
+    {"name": "head", "length": 0.30},
+    {"name": "body", "folded_length": 0.50, "scales": 22},
+    {"name": "tail", "length": 0.20}
+  ]
+}

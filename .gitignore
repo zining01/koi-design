@@ -1,0 +1,8 @@
+# generated grid output (re-create with: python3 koi_grid.py <config> --pick N --out <dir>)
+out/
+out_*/
+
+# OS / Python clutter
+.DS_Store
+__pycache__/
+*.pyc
