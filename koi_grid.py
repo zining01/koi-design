@@ -69,6 +69,10 @@ def folded_counts(seq, counts, cfg):
             for s, c in zip(seq, counts)]
 
 
+def is_whole(v, tol=1e-9):
+    return abs(v - round(v)) < tol
+
+
 def any_folded(cfg):
     return any("folded_length" in s for a in ("x", "y") for s in cfg[a])
 
@@ -133,11 +137,17 @@ def load_config(path):
         if "base_units_per_scale" not in cfg:
             sys.exit("graft mode needs 'base_units_per_scale': how long one "
                      "scale should be, in base units")
+        P = sum(cfg["scale_pattern"])
         for axis in ("x", "y"):
             for seg in cfg[axis]:
                 if "length" in seg and "scales" not in seg:
                     sys.exit("graft mode: use 'base' (not 'length') for "
                              "base segments: %r" % seg)
+                if "scales" in seg and not is_whole(seg["scales"] * P):
+                    sys.exit("graft mode: %d scales x %g units = %g is not a "
+                             "whole number of grid units; change the scale "
+                             "count or scale_pattern"
+                             % (seg["scales"], P, seg["scales"] * P))
     return cfg
 
 
@@ -234,9 +244,13 @@ def prop_axis_options(seq, m, cfg):
     All sensible snappings of one axis when every scale is m*P grid units.
     Scale segments are fixed at n*m*P units; each base segment is rounded
     down or up from its ideal size. Proportions are compared on folded
-    lengths for 'folded_length' segments. Returns [(counts, err)].
+    lengths for 'folded_length' segments. Returns [(counts, err)], or None
+    if a scale block would not be a whole number of grid units (possible
+    when scale_pattern has fractions), so its ends would miss the grid.
     """
     P = sum(cfg["scale_pattern"])
+    if not all(is_whole(s["scales"] * m * P) for s in seq if "scales" in s):
+        return None
     L = [seg_length(s) for s in seq]
     tot = sum(L)
     frac = [l / tot for l in L]
@@ -255,7 +269,8 @@ def prop_axis_options(seq, m, cfg):
     for combo in itertools.product(*choices):
         if min(combo, default=1) <= 0:
             continue
-        counts = [s["scales"] * m * P if "scales" in s else 0 for s in seq]
+        counts = [int(round(s["scales"] * m * P)) if "scales" in s else 0
+                  for s in seq]
         for i, v in zip(base_idx, combo):
             counts[i] = v
         options.append((counts,
@@ -270,11 +285,19 @@ def search_proportional(cfg):
     scale-free chunks.
     """
     per_m = cfg.get("options_per_scale_size", 3)
+    P = sum(cfg["scale_pattern"])
+    min_scale_units = min(sum(s["scales"] * P for s in cfg[a] if "scales" in s)
+                          for a in ("x", "y"))
     cands = []
-    m = 1
+    m = 0
     while True:
+        m += 1
+        if m * min_scale_units > cfg["max_n"]:
+            break
         ox = prop_axis_options(cfg["x"], m, cfg)
         oy = prop_axis_options(cfg["y"], m, cfg)
+        if ox is None or oy is None:
+            continue
         if not ox or not oy:
             break
         if min(sum(c) for c, _ in ox) > cfg["max_n"]:
@@ -289,7 +312,6 @@ def search_proportional(cfg):
                                    err=max(ex, ey)))
         family.sort(key=lambda c: c["err"])
         cands += family[:per_m]
-        m += 1
     return cands
 
 
@@ -369,16 +391,19 @@ def write_svg(path, xl, yl, xs, ys, title, grid_n=None):
             out.append('<line x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f" '
                        'stroke="#ddd" stroke-width="0.4"/>'
                        % (X(0), Y(i), X(tx), Y(i)))
-    style = {"scale": ('#4a90d9', 0.6), "boundary": ('#d0021b', 1.6),
-             "edge": ('#000', 2.0)}
+    style = {"scale": ('#4a90d9', 0.6, ''),
+             "scale-sub": ('#4a90d9', 0.6, ' stroke-dasharray="3 2"'),
+             "boundary": ('#d0021b', 1.6, ''), "edge": ('#000', 2.0, '')}
     for p, kind in xl:
-        c, wdt = style[kind]
+        c, wdt, dash = style[kind]
         out.append('<line x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f" stroke="%s" '
-                   'stroke-width="%.1f"/>' % (X(p), Y(0), X(p), Y(ty), c, wdt))
+                   'stroke-width="%.1f"%s/>'
+                   % (X(p), Y(0), X(p), Y(ty), c, wdt, dash))
     for p, kind in yl:
-        c, wdt = style[kind]
+        c, wdt, dash = style[kind]
         out.append('<line x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f" stroke="%s" '
-                   'stroke-width="%.1f"/>' % (X(0), Y(p), X(tx), Y(p), c, wdt))
+                   'stroke-width="%.1f"%s/>'
+                   % (X(0), Y(p), X(tx), Y(p), c, wdt, dash))
     # label chunk boundaries with their grid position
     for p, kind in xl:
         if kind == "boundary":
@@ -432,6 +457,8 @@ def emit(cfg, cx, cy, snap, outdir, header):
     pattern = cfg["scale_pattern"]
     xl, xs = layout(cfg["x"], cx, pattern)
     yl, ys = layout(cfg["y"], cy, pattern)
+    if snap:
+        xl, yl = mark_off_grid(xl), mark_off_grid(yl)
     tx, ty = xl[-1][0], yl[-1][0]
     pitches = scale_pitches(cfg["x"], cx, pattern) + \
         scale_pitches(cfg["y"], cy, pattern)
@@ -470,6 +497,17 @@ def emit(cfg, cx, cy, snap, outdir, header):
     ny = sum(s["scales"] for s in cfg["y"] if "scales" in s)
     lines.append("Scales: %d across x, %d across y -> %d scale cells where "
                  "the scale strips cross" % (nx, ny, nx * ny))
+    off = [p for p, kind in xl + yl if kind == "scale-sub"]
+    if off:
+        d = next((d for d in range(2, 65)
+                  if all(is_whole(p * d, 1e-6) for p in off)), None)
+        step = ("1/%d of a grid unit" % d) if d else "fractions of a grid unit"
+        lines.append("%d scale creases fall between grid lines, at multiples "
+                     "of %s (dashed in grid.svg, 'scale-sub' in lines.csv). "
+                     "Fold the %dx%d grid first, then add these by dividing "
+                     "the grid cells in the scale strips%s."
+                     % (len(off), step, round(tx), round(ty),
+                        (" into %d" % d) if d else ""))
     lines.append("")
     lines += describe_axis("x", cfg, cfg["x"], cx, xs, unit_mm)
     lines += describe_axis("y", cfg, cfg["y"], cy, ys, unit_mm)
@@ -487,6 +525,12 @@ def emit(cfg, cx, cy, snap, outdir, header):
               grid_n=int(tx) if snap else None)
     print(summary)
     print("\nWrote %s/{summary.txt, lines.csv, grid.svg}" % outdir)
+
+
+def mark_off_grid(lines):
+    """Relabel scale creases that don't sit on a whole grid line."""
+    return [(p, "scale-sub" if kind == "scale" and not is_whole(p, 1e-6)
+             else kind) for p, kind in lines]
 
 
 def exact_counts(cfg):

@@ -58,6 +58,22 @@ folded body. Each scale uses `sum(scale_pattern)` units of paper; the rest are
 hidden inside the pleats. The best way to find this number is to fold a small
 test strip of a few scales and measure it.
 
+**Pleats thinner than a grid unit.** `scale_pattern` can contain fractions.
+For pleats ½ unit thick, spaced 1 unit apart:
+
+```json
+"scale_pattern": [1, 0.5],
+"folded_units_per_scale": 1
+```
+
+Each scale then uses 1.5 units of paper and 1 unit of folded length, so the
+body folds to ⅔ of its paper width (with `[1, 1]` it would be ½). Chunk
+boundaries still land on whole grid lines. The pleat creases that fall between
+grid lines are dashed in `grid.svg`, marked `scale-sub` in `lines.csv`, and the
+summary says how finely to divide those grid cells. If a scale count would
+leave the body a fractional number of units long (e.g. 5 × 1.5 = 7.5), that
+grid is skipped and the next scale size is used instead.
+
 See `koi_folded.json`.
 
 ### 2. Paper proportional mode
@@ -95,7 +111,7 @@ See `example_config.json`.
 | `y` | same as `x` | List of chunks along the y axis. If the fish lies along the paper's diagonal, use the same list for both axes. |
 | `paper_size_mm` | 500 | Side of the square paper. The scale width is reported. |
 | `scale_width_mm` | – | Use **instead of** `paper_size_mm` to fix how wide one scale is on the paper (its full `scale_pattern`, before folding). The paper size needed is reported. |
-| `scale_pattern` | `[1, 1]` | Grid units per scale, split into the creases within one scale. `[1, 1]` = two equal parts; `[1, 2]` = a 1-unit part and a 2-unit part. |
+| `scale_pattern` | `[1, 1]` | Grid units per scale, split into the creases within one scale. `[1, 1]` = two equal parts; `[1, 2]` = a 1-unit part and a 2-unit part; `[1, 0.5]` = a 1-unit part and a ½-unit pleat (see above). |
 | `folded_units_per_scale` | – | Required when any chunk uses `folded_length`. See above. |
 | `max_n` / `min_n` | 160 / 8 | Largest / smallest grid to consider. |
 | `options_per_scale_size` | 3 | Proportional modes: how many roundings to list for each scale size. |
@@ -142,8 +158,8 @@ Written to the `--out` directory (default `out/`):
 
 | File | Contents |
 |---|---|
-| `grid.svg` | Diagram of the square: black = paper edges, red = chunk boundaries (labelled with their grid position), blue = scale creases, shaded = scale strips (darker where they cross). |
-| `lines.csv` | Every line on each axis: grid index, fraction of the paper, mm from each edge, and its kind (`edge`, `boundary`, `scale`). |
+| `grid.svg` | Diagram of the square: black = paper edges, red = chunk boundaries (labelled with their grid position), blue = scale creases (dashed if between grid lines), shaded = scale strips (darker where they cross). |
+| `lines.csv` | Every line on each axis: grid index, fraction of the paper, mm from each edge, and its kind (`edge`, `boundary`, `scale`, or `scale-sub` for a scale crease between grid lines). |
 | `summary.txt` | Paper and scale sizes, each chunk's size and share compared with the target, and how to divide the square into N. |
 
 ## Dividing the square into N

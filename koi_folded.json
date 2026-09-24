@@ -5,8 +5,8 @@
   "folded_units_per_scale": 1,
   "max_n": 200,
   "x": [
-    {"name": "head", "length": 0.30},
-    {"name": "body", "folded_length": 0.50, "scales": 22},
-    {"name": "tail", "length": 0.20}
+    {"name": "head", "length": 0.25},
+    {"name": "body", "folded_length": 0.50, "scales": 8},
+    {"name": "tail", "length": 0.25}
   ]
 }

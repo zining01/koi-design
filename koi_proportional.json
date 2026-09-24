@@ -4,8 +4,8 @@
   "scale_pattern": [1, 1],
   "max_n": 200,
   "x": [
-    {"name": "head", "length": 0.30},
-    {"name": "body", "length": 0.50, "scales": 22},
-    {"name": "tail", "length": 0.20}
+    {"name": "head", "length": 0.20},
+    {"name": "body", "length": 0.55, "scales": 5},
+    {"name": "tail", "length": 0.25}
   ]
 }
