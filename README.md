@@ -137,9 +137,9 @@ Keep the scales on every chunk the same size, or the output will warn you.
 ## Reading the candidate list
 
 ```
-  #    N   max err  scale(u)  head  body  tail
-  1    66    0.45%       2      13    44     9
-  4   132    0.45%       4      26    88    18
+  #    N   max err  scale(u)  scale mm  folded mm  head  body  tail
+  1    66    0.45%       2      18.18       9.09     13    44     9
+  4   132    0.45%       4      18.18       9.09     26    88    18
 ```
 
 - **N**: the grid is N × N.
@@ -150,6 +150,10 @@ Keep the scales on every chunk the same size, or the output will warn you.
   the body is always a whole number of scales, so only the scale-free chunks
   get rounded. Bigger scale sizes mean finer grids and more accurate ratios,
   but many more creases.
+- **scale mm**: length of one scale on the flat paper (its full
+  `scale_pattern`). **folded mm** (only with `folded_length`): how much one
+  scale adds to the folded body. If you set `scale_width_mm` instead of
+  `paper_size_mm`, this column shows the **paper mm** needed.
 - The remaining columns are each chunk's size in grid units on the paper.
 
 ## Output files

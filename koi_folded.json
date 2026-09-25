@@ -6,7 +6,7 @@
   "max_n": 200,
   "x": [
     {"name": "head", "length": 0.25},
-    {"name": "body", "folded_length": 0.50, "scales": 8},
+    {"name": "body", "folded_length": 0.50, "scales": 20},
     {"name": "tail", "length": 0.25}
   ]
 }

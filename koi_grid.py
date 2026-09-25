@@ -554,8 +554,29 @@ def exact_counts(cfg):
 
 # ------------------------------------------------------------------ main ---
 
+def mm_columns(cfg):
+    """Header and per-candidate formatter for the scale size in mm. With
+    scale_width_mm the scale size is fixed, so the paper size is shown."""
+    P = sum(cfg["scale_pattern"])
+    folded = any_folded(cfg)
+    if "scale_width_mm" in cfg:
+        def cols(pitch, N):
+            return "%8.1f" % (cfg["scale_width_mm"] / pitch * N)
+        return "paper mm", cols
+    paper = cfg["paper_size_mm"]
+
+    def cols(pitch, N):
+        s = "%8.2f" % (pitch * paper / N)
+        if folded:
+            s += "  %9.2f" % (pitch * paper / N
+                              * cfg["folded_units_per_scale"] / P)
+        return s
+    return ("scale mm  folded mm" if folded else "scale mm"), cols
+
+
 def print_candidates(cfg, cands, top):
     P = sum(cfg["scale_pattern"])
+    mm_hdr, mm_cols = mm_columns(cfg)
     names = [seg_name(s, i) for i, s in enumerate(cfg["x"])]
     if cfg["mode"] == "proportional":
         print("Grouped by scale size (grid units per scale); within each, "
@@ -563,13 +584,15 @@ def print_candidates(cfg, cands, top):
               "chunk size error, as a fraction of the %s. Segment sizes "
               "are grid units on the paper.\n"
               % ("folded length" if any_folded(cfg) else "paper"))
-        hdr = "  #    N   max err  scale(u)  %s" % "  ".join(names)
+        hdr = "  #    N   max err  scale(u)  %s  %s" % (mm_hdr,
+                                                     "  ".join(names))
         print(hdr)
         for i, c in enumerate(cands[:top], 1):
             pitch = scale_pitches(cfg["x"], c["cx"], cfg["scale_pattern"])[0]
             extra = "" if c["cy"] == c["cx"] else "   y: %s" % c["cy"]
-            print("%3d %5d   %5.2f%%  %6g    %s%s" % (
+            print("%3d %5d   %5.2f%%  %6g  %s    %s%s" % (
                 i, c["Nx"], 100 * c["err"], pitch,
+                mm_cols(pitch, max(c["Nx"], c["Ny"])),
                 "  ".join("%*d" % (len(n), v) for n, v in zip(names, c["cx"])),
                 extra))
     else:
@@ -577,12 +600,14 @@ def print_candidates(cfg, cands, top):
               "fraction of the base; scale dev = how much bigger(+)/"
               "smaller(-) the base is relative to the scales than "
               "requested.\n")
-        print("  #    N   shape err  scale dev   x segments (grid units)")
+        print("  #    N   shape err  scale dev  %s   x segments (grid units)"
+              % mm_hdr)
         for i, c in enumerate(cands[:top], 1):
             n = ("%d" % c["Nx"]) if c["Nx"] == c["Ny"] else \
                 ("%dx%d" % (c["Nx"], c["Ny"]))
-            print("%3d %5s   %6.2f%%   %+6.1f%%    %s%s" % (
-                i, n, 100 * c["err"], 100 * c["scale_dev"], c["cx"],
+            print("%3d %5s   %6.2f%%   %+6.1f%%  %s    %s%s" % (
+                i, n, 100 * c["err"], 100 * c["scale_dev"],
+                mm_cols(P, max(c["Nx"], c["Ny"])), c["cx"],
                 "" if c["cy"] == c["cx"] else "  y:%s" % c["cy"]))
     print("\nRun again with --pick # or --n N to write the grid files.")
 
