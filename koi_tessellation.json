@@ -1,0 +1,13 @@
+{
+  "_comment": "PLACEHOLDER VALUES. Example of two tessellations: scales on the body, and a second square-grid tessellation on the tail with its own pattern and folded_units.",
+  "paper_size_mm": 600,
+  "scale_pattern": [1, 0.5],
+  "folded_units_per_scale": 1,
+  "max_n": 200,
+  "x": [
+    {"name": "head", "length": 0.25},
+    {"name": "body", "folded_length": 0.50, "scales": 20},
+    {"name": "tail", "folded_length": 0.25, "repeats": 3,
+     "pattern": [2, 1, 1], "folded_units": 2}
+  ]
+}

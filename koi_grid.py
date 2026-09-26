@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-koi_grid.py - compute a folding grid for a base with a grafted scale pattern.
+koi_grid.py - compute a folding grid for a base with grafted tessellations
+(e.g. scales).
 
 The paper along each axis is a sequence of segments. Two modes:
 
@@ -26,11 +27,20 @@ GRAFT mode (no scale segment has a "length"):
   {"base": L}     a piece of the original base, L in *base units*
   {"scales": n}   n scales inserted at that point
   The body length then depends on "base_units_per_scale" (how long one scale
-  should be, in base units).
+  of the first scale segment should be, in base units).
 
 In both modes each scale occupies `scale_pattern` grid units (default [1, 1]:
 e.g. one pleat unit + one visible unit), possibly multiplied by a whole number
 so the proportions can be matched on a finer grid.
+
+OTHER SQUARE-GRID TESSELLATIONS: any scale segment can carry its own
+"pattern" (crease offsets of one repeat of the tessellation along this axis)
+and "folded_units" (how much one repeat adds to the folded length), which
+override scale_pattern / folded_units_per_scale. "repeats" may be used
+instead of "scales". Segments with the same pattern and folded_units are
+kept identical in size; different tessellations are each sized to fit their
+own chunk.
+  {"name": "tail", "length": 0.2, "repeats": 4, "pattern": [2, 1, 1]}
 
 The script finds uniform N x N grids on which every chunk boundary and every
 scale line falls on a grid line, then writes an SVG of the grid, a CSV of every
@@ -43,6 +53,7 @@ Usage:
   python3 koi_grid.py config.json --exact         # no snapping; exact positions
 """
 import argparse
+import copy
 import csv
 import itertools
 import json
@@ -52,6 +63,12 @@ import sys
 
 
 # ---------------------------------------------------------------- config ---
+#
+# load_config() annotates every tessellated segment (one with "scales") with:
+#   _pattern  crease offsets of one repeat, _P = sum(_pattern)
+#   _F        folded units per repeat (None if not given)
+#   _group    (pattern, folded units): segments in a group stay identical
+#   _word     "scales" or "repeats", for the output
 
 def seg_length(seg):
     """Target proportional length of a segment (proportional mode)."""
@@ -60,13 +77,19 @@ def seg_length(seg):
             return seg[key]
 
 
-def folded_counts(seq, counts, cfg):
-    """Segment lengths after the scale pleats of every 'folded_length'
-    segment are collapsed. Other segments are measured on the paper."""
-    P = sum(cfg["scale_pattern"])
-    F = cfg.get("folded_units_per_scale")
-    return [c * F / P if "folded_length" in s else c
-            for s, c in zip(seq, counts)]
+def fold(seg, c):
+    """Length of a segment of c paper units once its pleats are collapsed.
+    Only 'folded_length' segments are measured folded."""
+    return c * seg["_F"] / seg["_P"] if "folded_length" in seg else c
+
+
+def unfold(seg, f):
+    """Inverse of fold()."""
+    return f * seg["_P"] / seg["_F"] if "folded_length" in seg else f
+
+
+def folded_counts(seq, counts):
+    return [fold(s, c) for s, c in zip(seq, counts)]
 
 
 def is_whole(v, tol=1e-9):
@@ -77,10 +100,41 @@ def any_folded(cfg):
     return any("folded_length" in s for a in ("x", "y") for s in cfg[a])
 
 
+def tess_segs(cfg, axes=("x", "y")):
+    return [s for a in axes for s in cfg[a] if "scales" in s]
+
+
+def groups(cfg):
+    """Distinct tessellations, in order of first appearance (x, then y)."""
+    out = []
+    for s in tess_segs(cfg):
+        if s["_group"] not in out:
+            out.append(s["_group"])
+    return out
+
+
+def group_label(cfg, g):
+    names, axes = [], []
+    for axis in ("x", "y"):
+        for i, s in enumerate(cfg[axis]):
+            if "scales" in s and s["_group"] == g:
+                if seg_name(s, i) not in names:
+                    names.append(seg_name(s, i))
+                if axis not in axes:
+                    axes.append(axis)
+    label = "/".join(names)
+    return label if len(axes) == 2 else "%s (%s only)" % (label, axes[0])
+
+
 def seg_name(seg, i):
     if "name" in seg:
         return seg["name"]
     return ("scales%d" % i) if "scales" in seg else ("base%d" % i)
+
+
+def show(seg):
+    """A segment as the user wrote it, for error messages."""
+    return {k: v for k, v in seg.items() if not k.startswith("_")}
 
 
 def load_config(path):
@@ -90,7 +144,7 @@ def load_config(path):
     cfg.setdefault("max_n", 160)
     cfg.setdefault("min_n", 8)
     if "y" not in cfg:
-        cfg["y"] = cfg["x"]
+        cfg["y"] = copy.deepcopy(cfg["x"])
     if "paper_size_mm" in cfg and "scale_width_mm" in cfg:
         sys.exit("set either 'paper_size_mm' or 'scale_width_mm', not both")
     if "paper_size_mm" not in cfg and "scale_width_mm" not in cfg:
@@ -98,80 +152,101 @@ def load_config(path):
 
     scale_segs = []
     for axis in ("x", "y"):
+        for seg in cfg[axis]:
+            if "repeats" in seg:
+                if "scales" in seg:
+                    sys.exit("give 'scales' or 'repeats', not both: %r"
+                             % show(seg))
+                seg["scales"] = seg["repeats"]
+                seg["_word"] = "repeats"
+            if "scales" in seg:
+                seg.setdefault("_word", "scales")
+                if "base" in seg:
+                    sys.exit("segment has both 'base' and 'scales': %r"
+                             % show(seg))
+                if seg["scales"] < 1 or not is_whole(seg["scales"]):
+                    sys.exit("scale/repeat count must be a whole number "
+                             ">= 1: %r" % show(seg))
+                seg["scales"] = int(round(seg["scales"]))
+                pattern = seg.get("pattern", cfg["scale_pattern"])
+                if not pattern or any(not isinstance(u, (int, float))
+                                      or u <= 0 for u in pattern):
+                    sys.exit("a pattern must be a list of positive numbers: "
+                             "%r" % show(seg))
+                seg["_pattern"] = list(pattern)
+                seg["_P"] = sum(pattern)
+                seg["_F"] = seg.get("folded_units",
+                                    cfg.get("folded_units_per_scale"))
+                seg["_group"] = (tuple(pattern), seg["_F"])
+                scale_segs.append(seg)
+            else:
+                for key in ("folded_length", "pattern", "folded_units"):
+                    if key in seg:
+                        sys.exit("'%s' only applies to scale/repeat segments: "
+                                 "%r" % (key, show(seg)))
+                if "base" not in seg and "length" not in seg:
+                    sys.exit("segment needs 'base', 'length' or 'scales': %r"
+                             % show(seg))
         if not any("scales" in s for s in cfg[axis]):
             sys.exit("axis '%s' has no scale segment" % axis)
-        for seg in cfg[axis]:
-            if "scales" in seg:
-                if "base" in seg:
-                    sys.exit("segment has both 'base' and 'scales': %r" % seg)
-                if seg["scales"] < 1:
-                    sys.exit("scale count must be >= 1: %r" % seg)
-                scale_segs.append(seg)
-            elif "folded_length" in seg:
-                sys.exit("'folded_length' only applies to scale segments; "
-                         "use 'length' here: %r" % seg)
-            elif "base" not in seg and "length" not in seg:
-                sys.exit("segment needs 'base', 'length' or 'scales': %r"
-                         % seg)
     for s in scale_segs:
         if "length" in s and "folded_length" in s:
             sys.exit("give a scale segment 'length' or 'folded_length', "
-                     "not both: %r" % s)
+                     "not both: %r" % show(s))
+        if "folded_length" in s:
+            if s["_F"] is None:
+                sys.exit("'folded_length' needs 'folded_units_per_scale' (or "
+                         "'folded_units' on the segment): how many grid units "
+                         "of length one repeat adds to the folded chunk (out "
+                         "of the %g units it uses on the paper): %r"
+                         % (s["_P"], show(s)))
+            if not 0 < s["_F"] <= s["_P"]:
+                sys.exit("folded units must be > 0 and <= %g (sum of the "
+                         "pattern): %r" % (s["_P"], show(s)))
     with_len = [s for s in scale_segs
                 if "length" in s or "folded_length" in s]
     if with_len and len(with_len) != len(scale_segs):
         sys.exit("either every scale segment has a 'length'/'folded_length' "
                  "(proportional mode) or none does (graft mode)")
     cfg["mode"] = "proportional" if with_len else "graft"
-    if any_folded(cfg):
-        F = cfg.get("folded_units_per_scale")
-        P = sum(cfg["scale_pattern"])
-        if F is None:
-            sys.exit("'folded_length' needs 'folded_units_per_scale': how "
-                     "many grid units of length one scale adds to the folded "
-                     "body (out of the %g units it uses on the paper)" % P)
-        if not 0 < F <= P:
-            sys.exit("folded_units_per_scale must be > 0 and <= %g "
-                     "(sum of scale_pattern)" % P)
     if cfg["mode"] == "graft":
         if "base_units_per_scale" not in cfg:
             sys.exit("graft mode needs 'base_units_per_scale': how long one "
                      "scale should be, in base units")
-        P = sum(cfg["scale_pattern"])
         for axis in ("x", "y"):
             for seg in cfg[axis]:
                 if "length" in seg and "scales" not in seg:
                     sys.exit("graft mode: use 'base' (not 'length') for "
-                             "base segments: %r" % seg)
-                if "scales" in seg and not is_whole(seg["scales"] * P):
+                             "base segments: %r" % show(seg))
+                if "scales" in seg and not is_whole(seg["scales"] * seg["_P"]):
                     sys.exit("graft mode: %d scales x %g units = %g is not a "
                              "whole number of grid units; change the scale "
-                             "count or scale_pattern"
-                             % (seg["scales"], P, seg["scales"] * P))
+                             "count or pattern"
+                             % (seg["scales"], seg["_P"],
+                                seg["scales"] * seg["_P"]))
     return cfg
 
 
 # ---------------------------------------------------------------- layout ---
 
-def layout(seq, counts, pattern):
+def layout(seq, counts):
     """
     Place every line on one axis. counts[i] = length of segment i in grid
     units (ints when snapped, floats for exact layouts). Scale segments are
-    divided evenly into scales, each scale split according to `pattern`.
+    divided evenly into repeats, each split according to its pattern.
     Returns (lines, spans): lines = [(pos, kind)] with kind in
     edge/boundary/scale, spans = [(start, end, seg)].
     """
-    P = sum(pattern)
     pos = 0.0
     lines = [(0.0, "edge")]
     spans = []
     for seg, c in zip(seq, counts):
         start = pos
         if "scales" in seg:
-            unit = c / (seg["scales"] * P)
+            unit = c / (seg["scales"] * seg["_P"])
             p = start
             for _ in range(seg["scales"]):
-                for u in pattern:
+                for u in seg["_pattern"]:
                     p += u * unit
                     lines.append((p, "scale"))
             lines.pop()             # the last one is the segment boundary
@@ -182,17 +257,16 @@ def layout(seq, counts, pattern):
     return lines, spans
 
 
-def scale_pitches(seq, counts, pattern):
-    """Grid units per scale for every scale segment on an axis."""
-    P = sum(pattern)
+def scale_pitches(seq, counts):
+    """Grid units per repeat for every scale segment on an axis."""
     return [c / s["scales"] for s, c in zip(seq, counts) if "scales" in s]
 
 
 # ---------------------------------------------------- graft-mode search ---
 
-def graft_counts(seq, k, P):
-    return [s["scales"] * P if "scales" in s else int(round(k * s["base"]))
-            for s in seq]
+def graft_counts(seq, k):
+    return [s["scales"] * s["_P"] if "scales" in s
+            else int(round(k * s["base"])) for s in seq]
 
 
 def graft_bases(seq):
@@ -208,14 +282,14 @@ def shape_error(targets, actual):
 
 
 def search_graft(cfg):
-    P = sum(cfg["scale_pattern"])
+    P = tess_segs(cfg)[0]["_P"]
     k_ideal = P / cfg["base_units_per_scale"]
     bx, by = graft_bases(cfg["x"]), graft_bases(cfg["y"])
     lo, hi, steps = k_ideal * 0.5, k_ideal * 2.0, 20000
     seen = {}
     for i in range(steps + 1):
         k = lo + (hi - lo) * i / steps
-        cx, cy = graft_counts(cfg["x"], k, P), graft_counts(cfg["y"], k, P)
+        cx, cy = graft_counts(cfg["x"], k), graft_counts(cfg["y"], k)
         key = (tuple(cx), tuple(cy))
         if key in seen:
             continue
@@ -239,26 +313,61 @@ def search_graft(cfg):
 
 # --------------------------------------------- proportional-mode search ---
 
-def prop_axis_options(seq, m, cfg):
-    """
-    All sensible snappings of one axis when every scale is m*P grid units.
-    Scale segments are fixed at n*m*P units; each base segment is rounded
-    down or up from its ideal size. Proportions are compared on folded
-    lengths for 'folded_length' segments. Returns [(counts, err)], or None
-    if a scale block would not be a whole number of grid units (possible
-    when scale_pattern has fractions), so its ends would miss the grid.
-    """
-    P = sum(cfg["scale_pattern"])
-    if not all(is_whole(s["scales"] * m * P) for s in seq if "scales" in s):
+def tess_units(seg, m):
+    """Paper grid units of a tessellated segment whose repeats are m times
+    its pattern."""
+    return seg["scales"] * m * seg["_P"]
+
+
+def ideal_total(seq, primary, m):
+    """Ideal grid size (in the target frame) implied by the primary
+    tessellation at multiplier m, or None if it isn't on this axis."""
+    L = [seg_length(s) for s in seq]
+    tot = sum(L)
+    idx = [i for i, s in enumerate(seq)
+           if "scales" in s and s["_group"] == primary]
+    if not idx:
         return None
+    units = sum(fold(seq[i], tess_units(seq[i], m)) for i in idx)
+    return units / (sum(L[i] for i in idx) / tot)
+
+
+def prop_axis_options(seq, primary, m, N_ideal, subdiv):
+    """
+    All sensible snappings of one axis. Primary-tessellation segments use
+    multiplier m; every other tessellation gets the multipliers nearest its
+    ideal size, in steps of 1/subdiv (so its creases may fall on 1/subdiv
+    grid lines), and each scale-free segment is rounded down or up. Proportions are compared on folded lengths for 'folded_length'
+    segments. A tessellated segment must be a whole number of grid units so
+    its ends land on the grid. Returns [(counts, err, mults)], or None if
+    the primary tessellation can't use multiplier m.
+    """
     L = [seg_length(s) for s in seq]
     tot = sum(L)
     frac = [l / tot for l in L]
-    paper = [s["scales"] * m * P if "scales" in s else 0 for s in seq]
-    scale_units = sum(f for s, f in zip(seq, folded_counts(seq, paper, cfg))
-                      if "scales" in s)
-    scale_frac = sum(f for s, f in zip(seq, frac) if "scales" in s)
-    N_ideal = scale_units / scale_frac
+    for s in seq:
+        if "scales" in s and s["_group"] == primary \
+                and not is_whole(tess_units(s, m)):
+            return None
+    others = []
+    for s in seq:
+        if "scales" in s and s["_group"] != primary \
+                and s["_group"] not in others:
+            others.append(s["_group"])
+    mult_choices = []
+    for g in others:
+        idx = [i for i, s in enumerate(seq)
+               if "scales" in s and s["_group"] == g]
+        target = sum(unfold(seq[i], frac[i] * N_ideal) for i in idx)
+        ideal = target / sum(tess_units(seq[i], 1) for i in idx)
+        ks = [j / subdiv for j in range(max(1, math.floor(ideal * subdiv) - 2),
+                                        math.ceil(ideal * subdiv) + 3)]
+        ks = [k for k in ks
+              if all(is_whole(tess_units(seq[i], k)) for i in idx)]
+        ks.sort(key=lambda k: abs(k - ideal))
+        if not ks:
+            return []
+        mult_choices.append(ks[:2])
     base_idx = [i for i, s in enumerate(seq) if "scales" not in s]
     if len(base_idx) > 12:
         choices = [[int(round(frac[i] * N_ideal))] for i in base_idx]
@@ -266,47 +375,58 @@ def prop_axis_options(seq, m, cfg):
         choices = [sorted({math.floor(frac[i] * N_ideal),
                            math.ceil(frac[i] * N_ideal)}) for i in base_idx]
     options = []
-    for combo in itertools.product(*choices):
-        if min(combo, default=1) <= 0:
-            continue
-        counts = [int(round(s["scales"] * m * P)) if "scales" in s else 0
-                  for s in seq]
-        for i, v in zip(base_idx, combo):
-            counts[i] = v
-        options.append((counts,
-                        shape_error(L, folded_counts(seq, counts, cfg))))
+    for mcombo in itertools.product(*mult_choices):
+        mults = dict(zip(others, mcombo))
+        mults[primary] = m
+        for combo in itertools.product(*choices):
+            if min(combo, default=1) <= 0:
+                continue
+            counts = [int(round(tess_units(s, mults[s["_group"]])))
+                      if "scales" in s else 0 for s in seq]
+            for i, v in zip(base_idx, combo):
+                counts[i] = v
+            options.append((counts,
+                            shape_error(L, folded_counts(seq, counts)),
+                            mults))
     return options
 
 
 def search_proportional(cfg):
     """
-    One family of grids per scale size (m = 1, 2, ...: each scale is m times
-    the scale_pattern). Within a family, list the best few roundings of the
-    scale-free chunks.
+    One family of grids per size of the first tessellation (m = 1, 2, ...:
+    each repeat is m times its pattern). Within a family, list the best few
+    roundings of everything else. A tessellation that appears on both axes
+    uses the same multiplier on both, so its cells stay the same size.
     """
     per_m = cfg.get("options_per_scale_size", 3)
-    P = sum(cfg["scale_pattern"])
-    min_scale_units = min(sum(s["scales"] * P for s in cfg[a] if "scales" in s)
-                          for a in ("x", "y"))
+    subdiv = cfg.get("tessellation_subdivision", 2)
+    primary = groups(cfg)[0]
+    min_units = min(sum(tess_units(s, 1) for s in cfg[a]
+                        if "scales" in s and s["_group"] == primary)
+                    or float("inf") for a in ("x", "y"))
     cands = []
     m = 0
     while True:
         m += 1
-        if m * min_scale_units > cfg["max_n"]:
+        if m * min_units > cfg["max_n"]:
             break
-        ox = prop_axis_options(cfg["x"], m, cfg)
-        oy = prop_axis_options(cfg["y"], m, cfg)
+        nx = ideal_total(cfg["x"], primary, m)
+        ny = ideal_total(cfg["y"], primary, m)
+        ox = prop_axis_options(cfg["x"], primary, m, nx, subdiv)
+        oy = prop_axis_options(cfg["y"], primary, m, ny if ny else nx, subdiv)
         if ox is None or oy is None:
             continue
         if not ox or not oy:
-            break
-        if min(sum(c) for c, _ in ox) > cfg["max_n"]:
+            continue
+        if min(sum(c) for c, _, _ in ox) > cfg["max_n"]:
             break
         family = []
-        for cx, ex in ox:
-            for cy, ey in oy:
+        for cx, ex, mx in ox:
+            for cy, ey, my in oy:
                 N = sum(cx)
                 if N != sum(cy) or not (cfg["min_n"] <= N <= cfg["max_n"]):
+                    continue
+                if any(mx[g] != my[g] for g in mx if g in my):
                     continue
                 family.append(dict(cx=cx, cy=cy, Nx=N, Ny=N,
                                    err=max(ex, ey)))
@@ -338,6 +458,9 @@ def division_reference(N):
 
 # ---------------------------------------------------------------- output ---
 
+GROUP_COLOURS = ["#4a90d9", "#e8a33d", "#50b36b", "#9b59b6", "#d35d8a"]
+
+
 def write_csv(path, axes, unit_mm):
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
@@ -352,7 +475,7 @@ def write_csv(path, axes, unit_mm):
                             "%.2f" % ((total - p) * unit_mm), kind])
 
 
-def write_svg(path, xl, yl, xs, ys, title, grid_n=None):
+def write_svg(path, xl, yl, xs, ys, title, colour, grid_n=None):
     W = 900.0
     margin = 40.0
     tx, ty = xl[-1][0], yl[-1][0]
@@ -370,17 +493,18 @@ def write_svg(path, xl, yl, xs, ys, title, grid_n=None):
            '<rect width="100%" height="100%" fill="white"/>',
            '<text x="%.1f" y="24" font-family="sans-serif" font-size="15">%s'
            '</text>' % (margin, title)]
-    # shading: scale strips light, crossings darker
+    # shading: tessellated strips light, crossings darker; one colour per
+    # tessellation
     for (a, b, seg) in xs:
         if "scales" in seg:
             out.append('<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" '
-                       'fill="#4a90d9" fill-opacity="0.12"/>'
-                       % (X(a), Y(0), (b - a) * s, ty * s))
+                       'fill="%s" fill-opacity="0.12"/>'
+                       % (X(a), Y(0), (b - a) * s, ty * s, colour(seg)))
     for (a, b, seg) in ys:
         if "scales" in seg:
             out.append('<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" '
-                       'fill="#4a90d9" fill-opacity="0.12"/>'
-                       % (X(0), Y(a), tx * s, (b - a) * s))
+                       'fill="%s" fill-opacity="0.12"/>'
+                       % (X(0), Y(a), tx * s, (b - a) * s, colour(seg)))
     # faint uniform grid underlay (every grid unit) when snapped
     if grid_n:
         for i in range(int(round(tx)) + 1):
@@ -427,11 +551,11 @@ def write_svg(path, xl, yl, xs, ys, title, grid_n=None):
 
 
 def describe_axis(name, cfg, seq, counts, spans, unit_mm):
-    P = sum(cfg["scale_pattern"])
+    multi = len(groups(cfg)) > 1
     out = ["%s axis:" % name]
     if cfg["mode"] == "proportional":
         L = [seg_length(s) for s in seq]
-        fc = folded_counts(seq, counts, cfg)
+        fc = folded_counts(seq, counts)
         tl, tc = sum(L), sum(fc)
         of = "of folded" if any_folded(cfg) else "of paper"
     for i, ((a, b, seg), c) in enumerate(zip(spans, counts)):
@@ -447,23 +571,31 @@ def describe_axis(name, cfg, seq, counts, spans, unit_mm):
                 label += "   (base %g)" % seg["base"]
         if "scales" in seg:
             pitch = c / seg["scales"]
-            label += "   %d scales x %g u = %.2f mm each" % (
-                seg["scales"], round(pitch, 4), pitch * unit_mm)
+            label += "   %d %s x %g u = %.2f mm each" % (
+                seg["scales"], seg["_word"], round(pitch, 4), pitch * unit_mm)
+            if multi:
+                label += " (pattern %s)" % seg["_pattern"]
         out.append(label)
     return out
 
 
 def emit(cfg, cx, cy, snap, outdir, header):
-    pattern = cfg["scale_pattern"]
-    xl, xs = layout(cfg["x"], cx, pattern)
-    yl, ys = layout(cfg["y"], cy, pattern)
+    xl, xs = layout(cfg["x"], cx)
+    yl, ys = layout(cfg["y"], cy)
     if snap:
         xl, yl = mark_off_grid(xl), mark_off_grid(yl)
     tx, ty = xl[-1][0], yl[-1][0]
-    pitches = scale_pitches(cfg["x"], cx, pattern) + \
-        scale_pitches(cfg["y"], cy, pattern)
+    # repeat width of every tessellated segment, by tessellation
+    by_group = {}
+    for seq, counts in ((cfg["x"], cx), (cfg["y"], cy)):
+        for s, c in zip(seq, counts):
+            if "scales" in s:
+                by_group.setdefault(s["_group"], []).append(
+                    (s, c / s["scales"]))
+    gs = groups(cfg)
+    first_seg, first_pitch = by_group[gs[0]][0]
     if "scale_width_mm" in cfg:
-        unit_mm = cfg["scale_width_mm"] / pitches[0]
+        unit_mm = cfg["scale_width_mm"] / first_pitch
         paper = unit_mm * max(tx, ty)
     else:
         paper = cfg["paper_size_mm"]
@@ -474,29 +606,54 @@ def emit(cfg, cx, cy, snap, outdir, header):
         lines.append("WARNING: x total (%g) != y total (%g): this is a "
                      "rectangle, not a square. Adjust the segments so both "
                      "axes match." % (tx, ty))
-    if max(pitches) - min(pitches) > 1e-9:
-        lines.append("WARNING: scale segments have different scale widths "
-                     "(%s grid units) - the scales will not all be the same "
-                     "size." % ", ".join("%g" % round(p, 4) for p in pitches))
+    for g in gs:
+        pitches = [p for _, p in by_group[g]]
+        if max(pitches) - min(pitches) > 1e-9:
+            lines.append("WARNING: %s segments have different widths "
+                         "(%s grid units) - they will not all be the same "
+                         "size." % (group_label(cfg, g) if len(gs) > 1
+                                    else "scale",
+                                    ", ".join("%g" % round(p, 4)
+                                              for p in pitches)))
     if "scale_width_mm" in cfg:
         lines.append("Scale width fixed at %g mm -> paper needed: %.1f mm "
                      "square" % (cfg["scale_width_mm"], paper))
     else:
         lines.append("Paper: %g mm square" % paper)
-    lines.append("One grid unit = %.3f mm; one scale = %g grid units = "
-                 "%.2f mm (pattern %s)"
-                 % (unit_mm, round(pitches[0], 4), pitches[0] * unit_mm,
-                    pattern))
-    if any_folded(cfg):
-        F = cfg["folded_units_per_scale"]
-        fp = pitches[0] * F / sum(pattern)
-        lines.append("Folded: each scale adds %g grid units = %.2f mm to the "
-                     "folded body (folded_units_per_scale = %g)"
-                     % (round(fp, 4), fp * unit_mm, F))
-    nx = sum(s["scales"] for s in cfg["x"] if "scales" in s)
-    ny = sum(s["scales"] for s in cfg["y"] if "scales" in s)
-    lines.append("Scales: %d across x, %d across y -> %d scale cells where "
-                 "the scale strips cross" % (nx, ny, nx * ny))
+    if len(gs) == 1:
+        lines.append("One grid unit = %.3f mm; one scale = %g grid units = "
+                     "%.2f mm (pattern %s)"
+                     % (unit_mm, round(first_pitch, 4), first_pitch * unit_mm,
+                        first_seg["_pattern"]))
+        if any_folded(cfg):
+            F = first_seg["_F"]
+            fp = first_pitch * F / first_seg["_P"]
+            lines.append("Folded: each scale adds %g grid units = %.2f mm to "
+                         "the folded body (folded_units_per_scale = %g)"
+                         % (round(fp, 4), fp * unit_mm, F))
+        nx = sum(s["scales"] for s in cfg["x"] if "scales" in s)
+        ny = sum(s["scales"] for s in cfg["y"] if "scales" in s)
+        lines.append("Scales: %d across x, %d across y -> %d scale cells "
+                     "where the scale strips cross" % (nx, ny, nx * ny))
+    else:
+        lines.append("One grid unit = %.3f mm" % unit_mm)
+        lines.append("Tessellations:")
+        for g in gs:
+            s, pitch = by_group[g][0]
+            text = ("  %s: pattern %s, one repeat = %g u = %.2f mm"
+                    % (group_label(cfg, g), s["_pattern"], round(pitch, 4),
+                       pitch * unit_mm))
+            if s["_F"] is not None:
+                fp = pitch * s["_F"] / s["_P"]
+                text += ", folds to %g u = %.2f mm" % (round(fp, 4),
+                                                        fp * unit_mm)
+            nx = sum(t["scales"] for t in cfg["x"]
+                     if "scales" in t and t["_group"] == g)
+            ny = sum(t["scales"] for t in cfg["y"]
+                     if "scales" in t and t["_group"] == g)
+            text += "; " + ", ".join("%d %s across %s" % (n, s["_word"], a)
+                                     for n, a in ((nx, "x"), (ny, "y")) if n)
+            lines.append(text)
     off = [p for p, kind in xl + yl if kind == "scale-sub"]
     if off:
         d = next((d for d in range(2, 65)
@@ -505,8 +662,9 @@ def emit(cfg, cx, cy, snap, outdir, header):
         lines.append("%d scale creases fall between grid lines, at multiples "
                      "of %s (dashed in grid.svg, 'scale-sub' in lines.csv). "
                      "Fold the %dx%d grid first, then add these by dividing "
-                     "the grid cells in the scale strips%s."
+                     "the grid cells in the %s strips%s."
                      % (len(off), step, round(tx), round(ty),
+                        "tessellation" if len(gs) > 1 else "scale",
                         (" into %d" % d) if d else ""))
     lines.append("")
     lines += describe_axis("x", cfg, cfg["x"], cx, xs, unit_mm)
@@ -521,8 +679,11 @@ def emit(cfg, cx, cy, snap, outdir, header):
               unit_mm)
     title = ("%d x %d grid" % (tx, ty)) if snap else "exact (unsnapped) layout"
     title += " - red: chunk boundaries, blue: scale lines"
+
+    def colour(seg):
+        return GROUP_COLOURS[gs.index(seg["_group"]) % len(GROUP_COLOURS)]
     write_svg(os.path.join(outdir, "grid.svg"), xl, yl, xs, ys, title,
-              grid_n=int(tx) if snap else None)
+              colour, grid_n=int(tx) if snap else None)
     print(summary)
     print("\nWrote %s/{summary.txt, lines.csv, grid.svg}" % outdir)
 
@@ -534,31 +695,28 @@ def mark_off_grid(lines):
 
 
 def exact_counts(cfg):
-    P = sum(cfg["scale_pattern"])
+    first = tess_segs(cfg, ("x",))[0]
     if cfg["mode"] == "graft":
-        k = P / cfg["base_units_per_scale"]
-        return ([s["scales"] * P if "scales" in s else k * s["base"]
+        k = first["_P"] / cfg["base_units_per_scale"]
+        return ([s["scales"] * s["_P"] if "scales" in s else k * s["base"]
                  for s in cfg[a]] for a in ("x", "y"))
-    # proportional: scale the layout so the first scale segment's scales are
-    # exactly one scale_pattern long, so "grid units" still mean something
-    F = cfg.get("folded_units_per_scale", P)
-    first = next(s for s in cfg["x"] if "scales" in s)
-    first_units = first["scales"] * (F if "folded_length" in first else P)
+    # proportional: scale the layout so the first scale segment's repeats
+    # are exactly one pattern long, so "grid units" still mean something
+    first_units = fold(first, first["scales"] * first["_P"])
     k = first_units / seg_length(first)   # target-frame units per length
-
-    def paper_units(s):
-        u = seg_length(s) * k
-        return u * P / F if "folded_length" in s else u
-    return ([paper_units(s) for s in cfg[a]] for a in ("x", "y"))
+    return ([unfold(s, seg_length(s) * k) for s in cfg[a]]
+            for a in ("x", "y"))
 
 
 # ------------------------------------------------------------------ main ---
 
 def mm_columns(cfg):
-    """Header and per-candidate formatter for the scale size in mm. With
-    scale_width_mm the scale size is fixed, so the paper size is shown."""
-    P = sum(cfg["scale_pattern"])
-    folded = any_folded(cfg)
+    """Header and per-candidate formatter for the size of one repeat of the
+    first tessellation in mm. With scale_width_mm that size is fixed, so the
+    paper size is shown."""
+    first = tess_segs(cfg)[0]
+    folded = any("folded_length" in s for s in tess_segs(cfg)
+                 if s["_group"] == first["_group"])
     if "scale_width_mm" in cfg:
         def cols(pitch, N):
             return "%8.1f" % (cfg["scale_width_mm"] / pitch * N)
@@ -568,16 +726,19 @@ def mm_columns(cfg):
     def cols(pitch, N):
         s = "%8.2f" % (pitch * paper / N)
         if folded:
-            s += "  %9.2f" % (pitch * paper / N
-                              * cfg["folded_units_per_scale"] / P)
+            s += "  %9.2f" % (pitch * paper / N * first["_F"] / first["_P"])
         return s
     return ("scale mm  folded mm" if folded else "scale mm"), cols
 
 
 def print_candidates(cfg, cands, top):
-    P = sum(cfg["scale_pattern"])
+    first = tess_segs(cfg)[0]
     mm_hdr, mm_cols = mm_columns(cfg)
     names = [seg_name(s, i) for i, s in enumerate(cfg["x"])]
+    gs = groups(cfg)
+    if len(gs) > 1:
+        print("%d tessellations. The scale(u) and mm columns are for the "
+              "first one (%s).\n" % (len(gs), group_label(cfg, gs[0])))
     if cfg["mode"] == "proportional":
         print("Grouped by scale size (grid units per scale); within each, "
               "the best roundings of the scale-free chunks. max err = worst "
@@ -588,7 +749,8 @@ def print_candidates(cfg, cands, top):
                                                      "  ".join(names))
         print(hdr)
         for i, c in enumerate(cands[:top], 1):
-            pitch = scale_pitches(cfg["x"], c["cx"], cfg["scale_pattern"])[0]
+            pitch = next(cnt / s["scales"] for s, cnt in zip(cfg["x"], c["cx"])
+                         if "scales" in s and s["_group"] == first["_group"])
             extra = "" if c["cy"] == c["cx"] else "   y: %s" % c["cy"]
             print("%3d %5d   %5.2f%%  %6g  %s    %s%s" % (
                 i, c["Nx"], 100 * c["err"], pitch,
@@ -607,7 +769,7 @@ def print_candidates(cfg, cands, top):
                 ("%dx%d" % (c["Nx"], c["Ny"]))
             print("%3d %5s   %6.2f%%   %+6.1f%%  %s    %s%s" % (
                 i, n, 100 * c["err"], 100 * c["scale_dev"],
-                mm_cols(P, max(c["Nx"], c["Ny"])), c["cx"],
+                mm_cols(first["_P"], max(c["Nx"], c["Ny"])), c["cx"],
                 "" if c["cy"] == c["cx"] else "  y:%s" % c["cy"]))
     print("\nRun again with --pick # or --n N to write the grid files.")
 
